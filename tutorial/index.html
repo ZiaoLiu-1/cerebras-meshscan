@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light">
+    <meta
+      name="description"
+      content="从 SDK 是什么到 MeshScan 的 host/device 分工：先看八个数字如何传 carry，再运行、读代码和复写。"
+    >
+    <title>MeshScan 入门实验纸</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到教学实验</a>
+
+    <header class="lab-header">
+      <div class="lab-header__folio" aria-hidden="true">
+        <span>FIELD NOTE</span>
+        <strong>01</strong>
+      </div>
+      <div class="lab-header__copy">
+        <p class="eyebrow">MeshScan · build → inspect → rewrite</p>
+        <h1>八个数字，<br>两个 PE，<br><em>一条 carry。</em></h1>
+        <p class="lede">
+          从一个小实验走进 accelerator programming。先看运行逻辑，再对着实现读代码，最后亲手复写。
+        </p>
+      </div>
+      <aside class="scope-stamp" aria-label="演示边界">
+        <span>本页用途</span>
+        <strong>概念演示</strong>
+        <span>固定示例 · 完全本地</span>
+        <b>不是 WSE simulator 输出</b>
+      </aside>
+    </header>
+
+    <main id="main-content">
+      <nav class="lesson-nav" aria-label="学习入口">
+        <a href="#first-run">先运行一次</a>
+        <a href="#primer-title">看懂六步图解</a>
+        <a href="./read-code.html">读代码与复写 →</a>
+        <a href="./compaction.html">第二个算法：稳定筛选 →</a>
+        <a href="#self-explain">用自己的话解释</a>
+      </nav>
+      <div id="lesson-reference" class="lesson-reference">
+        <section id="first-run" class="first-run" aria-labelledby="first-run-title">
+          <div>
+            <p class="section-label">START HERE · 先把这几个词放对位置</p>
+            <h2 id="first-run-title">SDK 不是一块新显卡，<br>而是一套开发工具。</h2>
+            <p>这里用的是 Cerebras 的低层 SDK，不是调用聊天模型的 API。我们写一段给 PE 执行的程序，编译后在本机的 WSE fabric simulator 里检查结果。</p>
+            <p>Mac 负责承载 Linux 虚拟机和工具链；并没有变成一块 Cerebras 晶圆。模拟器正确性也不等于真实硬件性能。</p>
+          </div>
+          <div class="run-note">
+            <span class="section-label">先试这个 · 终端</span>
+            <p>在项目根目录运行：</p>
+            <pre><code>make test
+./build/meshscan-reference --pes 2 --values 3,-1,4,2,5,-2,1,3</code></pre>
+            <p>JSON 的 <code>output</code> 应为 <code>[3,2,6,8,13,11,12,15]</code>。这一步只运行 <strong>C++ CPU 对照模型</strong>；真实 SDK 运行入口见<a href="./read-code.html#run-sdk">代码导读</a>。</p>
+          </div>
+        </section>
+
+        <section class="system-map" aria-labelledby="system-map-title">
+          <p class="section-label">一次 SDK 实验的数据路线</p>
+          <h2 id="system-map-title">Host 安排工作，device 完成计算。</h2>
+          <ol class="pipeline">
+            <li><b>Python host</b><span>按 PE 打包输入，并设置有效长度。</span></li>
+            <li><b>H2D</b><span>Host-to-device：把输入复制到每个 PE 的本地内存。</span></li>
+            <li><b>CSL kernel</b><span>PE 执行 local scan，接收并向东传递 carry。</span></li>
+            <li><b>完成 → D2H</b><span>等待各 PE 完成，再把结果复制回 host。</span></li>
+            <li><b>C++ oracle</b><span>独立计算参考答案，再逐项核对读回结果。</span></li>
+          </ol>
+          <p class="map-footnote"><code>cslc</code> 是编译器，把 CSL 源码变成可执行的设备程序；<code>SdkRuntime</code> 是 Python 用来加载、传输、启动和回收这次运行的接口。</p>
+        </section>
+
+        <section class="primer" aria-labelledby="primer-title">
+          <div class="section-mark" aria-hidden="true">00</div>
+          <div class="primer__main">
+            <p class="section-label">先认两个词</p>
+            <h2 id="primer-title">像接力，但每个人先做自己的草稿</h2>
+            <dl class="glossary">
+              <div>
+                <dt><dfn>Inclusive prefix scan</dfn></dt>
+                <dd>
+                  第 <i>i</i> 个结果，是从第一个输入一直加到第 <i>i</i> 个输入；“inclusive” 表示当前这个数也算进去。
+                </dd>
+              </div>
+              <div>
+                <dt><dfn>PE</dfn> · processing element</dt>
+                <dd>
+                  可以先把它想成晶圆上的一个小工位：有自己的数据和计算，也能把消息传给相邻工位。
+                </dd>
+              </div>
+            </dl>
+          </div>
+          <p class="formula-note" aria-label="inclusive prefix scan 公式">
+            <span>目标</span>
+            y[i] = x[0] + … + x[i]
+          </p>
+        </section>
+
+        <section id="workbench" class="workbench" aria-labelledby="workbench-title">
+          <header class="workbench__header">
+            <div>
+              <p class="section-label">固定实验 · RUN 01</p>
+              <h2 id="workbench-title">把 carry 亲眼送过边界</h2>
+            </div>
+            <p class="keyboard-hint">步骤栏聚焦后，用 ← / → 切换</p>
+          </header>
+
+          <div class="progress-rule" aria-hidden="true">
+            <span id="progress-fill"></span>
+          </div>
+
+          <div
+            id="step-tabs"
+            class="step-tabs"
+            role="tablist"
+            aria-label="实验步骤"
+          >
+            <button id="step-tab-0" role="tab" aria-controls="stage-panel" aria-selected="true" tabindex="0" data-step="0" type="button">
+              <span>00:00</span>目标
+            </button>
+            <button id="step-tab-1" role="tab" aria-controls="stage-panel" aria-selected="false" tabindex="-1" data-step="1" type="button">
+              <span>02:00</span>分块
+            </button>
+            <button id="step-tab-2" role="tab" aria-controls="stage-panel" aria-selected="false" tabindex="-1" data-step="2" type="button">
+              <span>04:00</span>局部 scan
+            </button>
+            <button id="step-tab-3" role="tab" aria-controls="stage-panel" aria-selected="false" tabindex="-1" data-step="3" type="button">
+              <span>06:00</span>传 carry
+            </button>
+            <button id="step-tab-4" role="tab" aria-controls="stage-panel" aria-selected="false" tabindex="-1" data-step="4" type="button">
+              <span>08:00</span>变成全局
+            </button>
+            <button id="step-tab-5" role="tab" aria-controls="stage-panel" aria-selected="false" tabindex="-1" data-step="5" type="button">
+              <span>10:00</span>证明与瓶颈
+            </button>
+          </div>
+
+          <div
+            id="stage-panel"
+            class="stage-panel"
+            role="tabpanel"
+            aria-labelledby="step-tab-0"
+            tabindex="0"
+          >
+            <header class="stage-copy" aria-live="polite" aria-atomic="true">
+              <p id="stage-kicker" class="stage-kicker">STEP 1 / 6 · 00:00</p>
+              <h3 id="stage-title">先看我们要算什么</h3>
+              <p id="stage-detail">
+                每个位置都保留“到我为止”的总和。最后应该得到 [3, 2, 6, 8, 13, 11, 12, 15]。
+              </p>
+            </header>
+
+            <div class="input-ledger">
+              <span>原始输入 x</span>
+              <div id="input-row" class="number-row" aria-label="原始输入"></div>
+            </div>
+
+            <div class="rig-shell">
+              <div class="pe-rig" aria-label="两个逻辑 PE 的固定演示">
+                <article id="pe-0" class="pe-unit" data-state="idle" aria-labelledby="pe-0-title">
+                  <header>
+                    <div>
+                      <span>WEST / indices 0–3</span>
+                      <h4 id="pe-0-title">PE 0</h4>
+                    </div>
+                    <output id="pe-0-status">等待分块</output>
+                  </header>
+                  <div class="pe-unit__body">
+                    <div class="register-line">
+                      <span>INPUT</span>
+                      <div id="pe-0-input" class="number-row number-row--compact"></div>
+                    </div>
+                    <div class="register-line">
+                      <span>LOCAL PREFIX</span>
+                      <div id="pe-0-local" class="number-row number-row--compact"></div>
+                    </div>
+                    <div class="register-line register-line--global">
+                      <span>GLOBAL PREFIX</span>
+                      <div id="pe-0-global" class="number-row number-row--compact"></div>
+                    </div>
+                  </div>
+                  <footer>
+                    <span>CARRY IN <b id="pe-0-carry-in">0</b></span>
+                    <span>CARRY OUT <b id="pe-0-carry-out">—</b></span>
+                  </footer>
+                </article>
+
+                <div id="carry-route" class="carry-route" data-state="quiet" aria-label="PE 0 到 PE 1 的 eastbound carry">
+                  <span id="carry-label">eastbound route</span>
+                  <i aria-hidden="true"></i>
+                  <strong id="carry-value">—</strong>
+                </div>
+
+                <article id="pe-1" class="pe-unit" data-state="idle" aria-labelledby="pe-1-title">
+                  <header>
+                    <div>
+                      <span>EAST / indices 4–7</span>
+                      <h4 id="pe-1-title">PE 1</h4>
+                    </div>
+                    <output id="pe-1-status">等待分块</output>
+                  </header>
+                  <div class="pe-unit__body">
+                    <div class="register-line">
+                      <span>INPUT</span>
+                      <div id="pe-1-input" class="number-row number-row--compact"></div>
+                    </div>
+                    <div class="register-line">
+                      <span>LOCAL PREFIX</span>
+                      <div id="pe-1-local" class="number-row number-row--compact"></div>
+                    </div>
+                    <div class="register-line register-line--global">
+                      <span>GLOBAL PREFIX</span>
+                      <div id="pe-1-global" class="number-row number-row--compact"></div>
+                    </div>
+                  </div>
+                  <footer>
+                    <span>CARRY IN <b id="pe-1-carry-in">—</b></span>
+                    <span>CARRY OUT <b id="pe-1-carry-out">—</b></span>
+                  </footer>
+                </article>
+              </div>
+            </div>
+
+            <aside id="bench-note" class="bench-note">
+              <span aria-hidden="true">↳</span>
+              <p>先沿着输入从左到右读一遍；当前位置也包含在当前总和里。</p>
+            </aside>
+
+            <div id="proof-strip" class="proof-strip" hidden>
+              <div>
+                <span>FINAL PREFIX</span>
+                <output id="final-row">[3, 2, 6, 8, 13, 11, 12, 15]</output>
+              </div>
+              <p>
+                <strong>Invariant：</strong>PE 1 完成后，indices 0–7 都等于串行 inclusive scan；它的 outgoing carry
+                <b>15</b> 也等于八个输入的总和。
+              </p>
+            </div>
+
+            <nav class="stage-actions" aria-label="实验步骤控制">
+              <button id="previous-step" class="button button--secondary" type="button" disabled>← 上一步</button>
+              <span id="step-position">1 / 6</span>
+              <button id="next-step" class="button button--primary" type="button">下一步：分块 →</button>
+            </nav>
+          </div>
+        </section>
+
+        <section class="margin-lessons" aria-labelledby="lesson-title">
+          <div class="section-mark" aria-hidden="true">02</div>
+          <div>
+            <p class="section-label">把现象说成人话</p>
+            <h2 id="lesson-title">局部可以并行，全局仍有先后</h2>
+          </div>
+          <div class="margin-lessons__notes">
+            <article>
+              <span class="pencil-number">A</span>
+              <h3>PE 1 到底在等什么？</h3>
+              <p>它可以提前算自己的 local prefix，但在知道左边四个数合计多少之前，不能把 local 结果叫作 global 结果。</p>
+            </article>
+            <article>
+              <span class="pencil-number">B</span>
+              <h3>怎么知道结果真的对？</h3>
+              <p>检查每个已完成 PE 管辖的位置都等于串行答案，同时它向东发出的 carry 等于到这个 PE 为止的输入总和。</p>
+            </article>
+            <article class="chain-note">
+              <span class="pencil-number">C</span>
+              <h3>如果从 2 个 PE 扩到很多个？</h3>
+              <div class="dependency-chain" aria-label="线性 carry 依赖链">
+                <span>PE 0</span><i>→</i><span>PE 1</span><i>→</i><span>PE 2</span><i>→</i><span>PE 3</span>
+              </div>
+              <p>local scan 仍能并行；但最东边要等 carry 一站一站走完。PE 越多，这条线性依赖链越可能成为瓶颈。</p>
+            </article>
+          </div>
+        </section>
+      </div>
+
+      <section id="self-explain" class="self-explain" aria-labelledby="self-explain-title">
+        <header>
+          <div>
+            <p class="section-label">练习 · SELF-EXPLANATION</p>
+            <h2 id="self-explain-title">现在不用标准答案，换成你的话</h2>
+          </div>
+          <button id="reference-toggle" class="reference-toggle" type="button" aria-pressed="false">
+            隐藏参考，开始自述
+          </button>
+        </header>
+
+        <p class="honesty-note">
+          先隐藏参考，用自己的话回答下面四题。网页只检查四格是否写过，<strong>不会自动判断你是否理解</strong>。内容留在当前页面，不会自动保存或发送；需要保留时，请先复制再关页。
+        </p>
+
+        <form id="m0-form" novalidate>
+          <div class="question-row">
+            <span aria-hidden="true">01</span>
+            <label for="answer-partition">8 个数放到两个 PE 时，你会怎么分？</label>
+            <textarea id="answer-partition" name="partition" rows="3" autocomplete="off"></textarea>
+          </div>
+          <div class="question-row">
+            <span aria-hidden="true">02</span>
+            <label for="answer-carry">为什么 PE 1 要等 PE 0 的 carry，才能得到 global 结果？</label>
+            <textarea id="answer-carry" name="carry" rows="3" autocomplete="off"></textarea>
+          </div>
+          <div class="question-row">
+            <span aria-hidden="true">03</span>
+            <label for="answer-invariant">PE 1 完成后，你会检查什么 invariant 来证明结果正确？</label>
+            <textarea id="answer-invariant" name="invariant" rows="3" autocomplete="off"></textarea>
+          </div>
+          <div class="question-row">
+            <span aria-hidden="true">04</span>
+            <label for="answer-bottleneck">当 PE 数量变多时，线性 carry chain 最可能慢在哪里？</label>
+            <textarea id="answer-bottleneck" name="bottleneck" rows="3" autocomplete="off"></textarea>
+          </div>
+
+          <div class="form-actions">
+            <output id="answer-progress" aria-live="polite">0 / 4 已写</output>
+            <button id="copy-answers" class="button button--primary" type="button" disabled>
+              写完四格后复制我的解释
+            </button>
+          </div>
+          <p id="copy-status" class="copy-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <section class="next-bench" aria-labelledby="next-title">
+        <p class="section-label">NEXT BENCH</p>
+        <h2 id="next-title">先复现，再把关键部分写成自己的。</h2>
+        <ol>
+          <li><div><b>看图：</b>本页是固定数据的教学演示，不调用 SDK。它讲算法，不展示私有 simulator 输出。</div></li>
+          <li><div><b>读实现：</b><a href="./read-code.html">沿着 host → layout → PE → validation 读一遍</a>，找到每段代码的责任。</div></li>
+          <li><div><b>动手：</b>换输入、加一个边界测试、复写局部 scan，再记录你改了什么、怎样验证。</div></li>
+        </ol>
+        <p class="evidence-note">每次只改一个条件：先预测输出，再运行核对，最后解释差异。边界输入和失败案例能帮助你检查自己的推理。</p>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <p>MeshScan / learning worksheet / local-only assets</p>
+      <p>按自己的话解释，比背术语更重要。</p>
+    </footer>
+
+    <noscript>
+      <p class="noscript-note">这个实验需要浏览器启用 JavaScript，才能切换步骤和复制你的自述。</p>
+    </noscript>
+  </body>
+</html>

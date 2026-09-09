@@ -1,0 +1,21 @@
+.DS_Store
+build/
+out/
+.venv/
+__pycache__/
+*.pyc
+
+# Cerebras SDK distributions and generated binaries are licensed artifacts.
+# They must never be committed or copied into a public repository.
+cs_sdk/
+Cerebras-SDK-*.tar.gz
+Cerebras-SDK-*.tar.gz.sha256
+*.sif
+*.elf
+simfab_traces/
+
+
+# Local coordination and historical validation records.
+/AGENTS.md
+/STATE.md
+/docs/SDK_GUI_LOCAL.md

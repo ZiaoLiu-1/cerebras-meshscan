@@ -1,0 +1,51 @@
+// MeshScan: a one-dimensional, nearest-neighbor inclusive prefix scan.
+// Uses SDK 2.10.1 routing/runtime APIs.
+param width: i16;
+param chunk_size: i16;
+
+const even_link: color = @get_color(0);
+const odd_link: color = @get_color(1);
+const memcpy = @import_module("<memcpy/get_params>", .{
+  .width = width,
+  .height = 1,
+});
+
+layout {
+  @comptime_assert(width >= 1 and width <= 8);
+  @comptime_assert(chunk_size >= 1 and chunk_size <= 1024);
+  @set_rectangle(width, 1);
+
+  for (@range(i16, width)) |x| {
+    // A middle PE consumes one color and injects a different color. A carry
+    // therefore cannot bypass that PE's local addition at a through-route.
+    const east_color = if (x % 2 == 0) even_link else odd_link;
+    const west_color = if (x % 2 == 0) odd_link else even_link;
+    @set_tile_code(x, 0, "pe.csl", .{
+      .memcpy_params = memcpy.get_params(x),
+      .width = width,
+      .chunk_size = chunk_size,
+      .pe_id = x,
+      .east_color = east_color,
+      .west_color = west_color,
+    });
+
+    if (x > 0) {
+      @set_color_config(x, 0, west_color, .{
+        .routes = .{ .rx = .{WEST}, .tx = .{RAMP} },
+      });
+    }
+    if (x < width - 1) {
+      @set_color_config(x, 0, east_color, .{
+        .routes = .{ .rx = .{RAMP}, .tx = .{EAST} },
+      });
+    }
+  }
+
+  @export_name("values", [*]i32, true);
+  @export_name("valid_count", [*]i32, true);
+  @export_name("incoming_carry", [*]i32, true);
+  @export_name("local_total", [*]i32, true);
+  @export_name("outgoing_carry", [*]i32, true);
+  @export_name("completed", [*]i32, true);
+  @export_name("compute", fn()void);
+}

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="MeshScan 代码导读：认识 host、CSL layout、PE kernel、验证边界，并用小改动开始复写。">
+    <title>读实现，再复写 — MeshScan 实验笔记</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到代码导读</a>
+    <header class="guide-header">
+      <p class="eyebrow">FIELD NOTE 02 · MeshScan</p>
+      <h1>读实现，<br>再把它写成自己的。</h1>
+      <p class="lede">不用一天学完整套 SDK。先能跟着一条输入，讲清它去了哪里、等了什么、为什么答案可信。</p>
+    </header>
+    <main id="main-content" class="guide-main">
+      <nav class="lesson-nav" aria-label="导读入口">
+        <a href="./index.html">← 六步概念图解</a>
+        <a href="#run-sdk">运行入口</a>
+        <a href="#code-map">文件导读</a>
+        <a href="#rewrite">开始复写</a>
+        <a href="./compaction.html">进阶：筛选与跨 PE 搬运 →</a>
+      </nav>
+
+      <section id="run-sdk" class="guide-section" aria-labelledby="run-title">
+        <p class="section-label">01 · 先分清你运行的是什么</p>
+        <h2 id="run-title">三个入口，各自运行什么。</h2>
+        <dl class="file-index">
+          <div><dt><code>make tutorial</code></dt><dd>打开本页和固定图解。浏览器没有调用 SDK，也没有重写 scan。这是讲解，不是一次设备运行。</dd></div>
+          <div><dt><code>make viewer</code></dt><dd>本地交互 viewer 调用 C++ 模型，允许换输入和 PE 数。页面保留 <strong>CPU logical model — not WSE simulator</strong> 标记。</dd></div>
+          <div><dt><code>make simulator</code></dt><dd>在已配置的 SDK 环境里编译 CSL、运行 host/device，并与 C++ oracle 对照。检查终端退出状态和生成的验证报告，确认是否通过。</dd></div>
+        </dl>
+        <p>以下命令在 Mac 终端中、项目目录内运行，要求已配置 SDK 2.10.1 和名为 <code>cs_sdk</code> 的 Lima VM。若使用其他 VM 名或 SDK 路径，先查看 <code>python3 tools/run_simulator.py --help</code>。</p>
+        <pre><code>make test
+limactl start cs_sdk
+make simulator</code></pre>
+        <p>用完后可运行 <code>limactl stop cs_sdk</code> 归还虚拟机内存。模拟器日志、编译产物和源码快照留在 repo 外的私有运行目录。测试没有真实 WSE 硬件参与，不产生硬件速度结论。</p>
+        <p class="evidence-note"><code>docs/VALIDATION.md</code> 说明测试覆盖范围。静态图解只用于解释算法；<code>--prepare-only</code> 只准备文件，不执行 SDK。</p>
+      </section>
+
+      <section id="code-map" class="guide-section" aria-labelledby="code-title">
+        <p class="section-label">02 · 在编辑器里按这个顺序打开</p>
+        <h2 id="code-title">每个文件只回答一个主要问题。</h2>
+        <dl class="file-index">
+          <div><dt><code>src/reference.cpp</code></dt><dd><b>答案应该是什么？</b>先读串行 scan，再看 balanced partition 和 carry。C++ 用检查过的 int32 加法定义可接受的输入范围。</dd></div>
+          <div><dt><code>tools/run_simulator.py</code></dt><dd><b>怎样复现一次实验？</b>Mac 侧调度器做预检、准备私有源码快照、调用工具链，再校验报告；C++ oracle 也在 Mac 上运行。</dd></div>
+          <div><dt><code>host/device_run.py</code></dt><dd><b>输入怎样进出设备？</b>Python 使用 <code>SdkRuntime</code>。找 H2D、<code>launch</code>、D2H 和运行结束的清理；host 不负责算另一个 Python scan。</dd></div>
+          <div><dt><code>src/device/layout.csl</code></dt><dd><b>哪些 PE 参与，邻居怎样连接？</b>layout 在编译时安排一行 PE、每块的参数、消息路由和 host 可访问的符号。</dd></div>
+          <div><dt><code>src/device/pe.csl</code></dt><dd><b>一个 PE 收到工作后具体做什么？</b>看本地数组、有效长度、局部累计、carry 接收与发送、异步完成路径。</dd></div>
+          <div><dt><code>tests/</code> 与 <code>host/</code></dt><dd><b>怎样发现“看起来对”的 bug？</b>阅读固定案例、随机 seed、形状检查和边界测试。输出总和相同，不代表每个 prefix 都对。</dd></div>
+        </dl>
+        <p>上面的路径均相对于项目根目录，可在编辑器中按顺序打开。</p>
+      </section>
+
+      <section class="guide-section" aria-labelledby="padding-title">
+        <p class="section-label">03 · 真正的工程细节之一</p>
+        <h2 id="padding-title">数组长度不整齐，PE 内存却要整齐。</h2>
+        <p>例如 5 个数分给 3 个 PE：按原顺序得到 <code>[2, 2, 1]</code> 个有效值。传输时每个 PE 使用相同数量的物理 slots，剩下的位置是 padding，不是额外输入。</p>
+        <pre><code>输入：       [3, -1, 4, 2, 5]
+PE 0 有效： [3, -1]       valid_count = 2
+PE 1 有效： [4,  2]       valid_count = 2
+PE 2 有效： [5] + padding valid_count = 1</code></pre>
+        <p><code>valid_count</code> 告诉 kernel 哪些位置能参与计算，告诉 host 哪些结果能拼回输出。不要靠“padding 恰好是零”来替代这个契约。</p>
+        <details class="question-details">
+          <summary>如果只有 1 个输入，却有 4 个 PE 呢？</summary>
+          <p>有效长度是 <code>[1,0,0,0]</code>。后面三个 PE 虽然没有本地输入，也必须接收 carry，必要时继续转发，并完成自己的命令流。空 PE 不是不存在的 PE。若整个输入为空，host 使用单独 fast path，不发起零长度设备拷贝。</p>
+        </details>
+      </section>
+
+      <section class="guide-section" aria-labelledby="async-title">
+        <p class="section-label">04 · 真正的工程细节之二</p>
+        <h2 id="async-title">“已经发起发送”不等于“已经发送完”。</h2>
+        <p>异步操作会先登记一项数据移动工作，程序的后续动作由完成事件衔接。想成你把包裹交到传送带：按下发送键时，它不一定已经到邻居手上。</p>
+        <ol>
+          <li>每个 PE 先计算本地 prefix。PE 0 从 carry 0 开始；其他 PE 等西侧数据。</li>
+          <li>carry 到达后，把它加到每个有效 local prefix。</li>
+          <li>如果还有东侧邻居，把新的累计总和发过去；等待最终传输完成，才能结束本 PE 的命令。</li>
+          <li>每个 PE 走完自己的路径后调用完成通知。host 等待 blocking launch 返回，再执行 D2H。</li>
+        </ol>
+        <p><code>unblock_cmd_stream()</code> 的意思是“本 PE 的这项工作做完，可以继续后续命令”，不是一条魔法全局 barrier。少掉空 PE 的完成路径，整个 host launch 也可能一直等。</p>
+        <details class="question-details">
+          <summary>为什么还要在同一 runtime 中反复 launch？</summary>
+          <p>只跑一次很容易漏掉残留状态。连续使用不同输入，可以暴露 carry 没重置、有效长度沿用上次值、queue 生命周期错误等问题。每次返回的数组都必须重新与 C++ oracle 逐项相等。</p>
+        </details>
+      </section>
+
+      <section class="guide-section" aria-labelledby="validation-title">
+        <p class="section-label">05 · 为什么它不只是加几个数</p>
+        <h2 id="validation-title">算术很小，完整链路才是项目。</h2>
+        <p>这个项目练的是：把一个确定问题映射到多 PE，管理不同进度的通信和完成状态，定义 host/device 数据契约，并用独立实现验证。算法刻意小，才能把错误定位到这些系统边界。</p>
+        <ul>
+          <li><b>逐项对比：</b>只比较最后总和会漏掉中间 prefix 错误。</li>
+          <li><b>混合正负数：</b>能暴露无符号解释、carry 偏移和分块位置错误。</li>
+          <li><b>边界长度：</b>0、1、少于 PE 数、不能整除 PE 数，都需要明确行为。</li>
+          <li><b>固定随机 seed：</b>失败可以复现；随机案例不是“数学上证明所有输入正确”。</li>
+          <li><b>溢出预检：</b>serial prefix、local prefix 和 carry 都必须在 int32 范围；超范围输入在 host 侧拒绝，不默默取模。</li>
+        </ul>
+        <p>目前是线性 carry chain：local scan 可并行，carry 依赖深度仍随 PE 数增长。可以研究树式 scan 作为后续算法改进，但不能从这次 correctness 实验声称已有加速比。</p>
+      </section>
+
+      <section id="rewrite" class="guide-section" aria-labelledby="rewrite-title">
+        <p class="section-label">06 · 三个练习</p>
+        <h2 id="rewrite-title">不要重打整仓库。先改出一份你能解释的 diff。</h2>
+        <h3>A. 先预测，再运行 · 约 10 分钟</h3>
+        <p>输入 <code>[4,-2,7,0,-3]</code>，用 3 个 PE。先在纸上写出每个 PE 的输入、local prefix、carry in/out 和最终答案，再用 C++ CLI 与 viewer 检查。把你预测错的地方写下来。</p>
+        <h3>B. 增加一个抓 bug 的测试 · 约 20 分钟</h3>
+        <p>选择“只有 1 个值却有 8 个 PE”，或“连续两次 launch 的有效长度不同”。先说出这个测试针对哪个状态错误，再加入 host 的 validation cases。保留 seed 或精确输入，以及实际运行结果。</p>
+        <h3>C. 复写一个核心函数 · 约 30–45 分钟</h3>
+        <p>先从 C++ 的 balanced partition 或 local scan 开始，关闭参考写一个版本，再比较差异。理解后再复写 CSL 的本地累计部分；暂时保留已验证的通信外壳，一次只改变一处。</p>
+        <p>复写时记录：<strong>改了哪部分 → 为什么这样写 → 用什么输入验证 → 还有什么疑问。</strong>保留原版本用于对照，先解释差异，再决定是否采用新写法。</p>
+        <a class="button button--primary guide-cta" href="./index.html#self-explain">回到四条自述，检查你的解释 →</a>
+      </section>
+    </main>
+    <footer class="page-footer">
+      <p>MeshScan / code-reading companion / local only</p>
+      <p>小范围，完整实现；结论跟着证据走。</p>
+    </footer>
+  </body>
+</html>

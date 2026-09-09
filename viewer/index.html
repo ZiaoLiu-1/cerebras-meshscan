@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="由 MeshScan C++ reference trace 驱动的本地 PE carry 教学工具。">
+    <title>MeshScan Trace Desk</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#trace-workbench">跳到 trace 工作台</a>
+
+    <header class="masthead">
+      <div class="masthead__index" aria-hidden="true">MS / 00</div>
+      <div class="masthead__copy">
+        <p class="eyebrow">MeshScan · Trace Desk</p>
+        <h1>看见 carry<br>如何穿过 PE 阵列</h1>
+        <p class="lede">输入一组整数，逐步查看分块、局部 scan、从西向东的 carry，以及最终 prefix 结果。</p>
+      </div>
+      <p class="model-boundary">CPU logical model — not WSE simulator</p>
+    </header>
+
+    <main id="trace-workbench" class="workbench">
+      <form id="trace-form" class="trace-form" novalidate>
+        <div class="field field--values">
+          <label for="values-input">输入 values</label>
+          <input
+            id="values-input"
+            name="values"
+            type="text"
+            value="3,-2,5,7,-4,1"
+            inputmode="text"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="values-hint form-error"
+          >
+          <span id="values-hint" class="field__hint">逗号分隔的 int32，最多 256 个。空白表示空输入。</span>
+        </div>
+
+        <div class="field field--pes">
+          <label for="pe-input">逻辑 PE</label>
+          <input
+            id="pe-input"
+            name="pe_count"
+            type="number"
+            value="4"
+            min="1"
+            max="16"
+            step="1"
+            inputmode="numeric"
+            aria-describedby="pe-hint form-error"
+          >
+          <span id="pe-hint" class="field__hint">界面最多显示 16 个；这不是硬件上限。</span>
+        </div>
+
+        <button id="run-button" class="run-button" type="submit">生成 CPU trace</button>
+        <p id="form-error" class="form-error" role="alert"></p>
+      </form>
+
+      <section class="trace-story" aria-labelledby="phase-title">
+        <div class="story-head">
+          <div>
+            <p id="step-count" class="step-count">STEP 0 / 0</p>
+            <h2 id="phase-title">正在准备模型</h2>
+          </div>
+          <div class="story-controls" aria-label="Trace 步骤控制">
+            <button id="previous-button" type="button" disabled>← 上一步</button>
+            <button id="next-button" type="button" disabled>下一步 →</button>
+          </div>
+        </div>
+
+        <div
+          id="fabric-viewport"
+          class="fabric-viewport"
+          role="region"
+          aria-label="逻辑 PE 阵列"
+          tabindex="0"
+        >
+          <div id="fabric-track" class="fabric-track" aria-live="polite"></div>
+        </div>
+
+        <div class="readout">
+          <span class="readout__mark" aria-hidden="true"></span>
+          <p id="step-detail">正在从本地 C++ model 读取 trace…</p>
+        </div>
+
+        <div class="result-line">
+          <span>FINAL PREFIX</span>
+          <output id="final-output" aria-live="polite">—</output>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p><span>LOCAL PATH</span> browser → oracle_bridge.py → meshscan-reference</p>
+      <p>← / → 切换步骤</p>
+    </footer>
+  </body>
+</html>

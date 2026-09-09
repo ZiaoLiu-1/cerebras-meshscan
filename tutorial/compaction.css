@@ -1,0 +1,345 @@
+.compact-page .guide-header,
+.compact-page .guide-main,
+.compact-page .page-footer {
+  max-width: 66rem;
+}
+
+.compact-page .guide-header h1 {
+  max-width: 17ch;
+  font-size: clamp(2.25rem, 6vw + 0.5rem, 4.75rem);
+  line-height: 1.14;
+  text-wrap: balance;
+}
+
+.compact-page .guide-section h2 {
+  font-size: clamp(1.85rem, 4vw + 0.5rem, 3.4rem);
+  line-height: 1.2;
+}
+
+.compact-page .guide-section {
+  padding-block: clamp(2rem, 6vw, 4rem);
+}
+
+.compact-page .guide-section p {
+  color: var(--ink);
+  line-height: 1.7;
+}
+
+.compact-page figure {
+  margin: var(--space-8) 0;
+}
+
+.compact-page figcaption {
+  display: grid;
+  gap: var(--space-2);
+  font-weight: 700;
+}
+
+.compact-page figcaption span {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.compact-scope {
+  display: inline-block;
+  max-width: 58ch;
+  margin-top: var(--space-6);
+  border-block: 1px solid var(--ink);
+  padding-block: var(--space-3);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.compact-example {
+  border-block: 2px solid var(--ink);
+  padding-block: var(--space-6);
+}
+
+.record-line {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.record-line > b small {
+  margin-left: var(--space-2);
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.record-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compact-page .record-strip li {
+  flex: 0 1 4rem;
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  border: 1px solid var(--ink-soft);
+  padding: var(--space-2) var(--space-1);
+  color: var(--ink);
+  background: var(--paper-raised);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.record-strip b {
+  font-size: 1.5rem;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.record-strip span {
+  font-size: 0.6875rem;
+}
+
+.record-strip li[data-kept="true"],
+.record-line--result .record-strip li {
+  color: var(--paper-raised);
+  background: var(--signal-deep);
+  border-color: var(--signal-deep);
+}
+
+.record-line--result .record-strip li {
+  flex-basis: 6rem;
+}
+
+.compact-example > p {
+  margin-top: var(--space-6);
+  margin-bottom: 0;
+}
+
+.phase-list {
+  margin: var(--space-8) 0;
+  padding-left: var(--space-6);
+}
+
+.phase-list li {
+  padding-left: var(--space-2);
+}
+
+.phase-list b,
+.phase-list span {
+  display: block;
+}
+
+.phase-list b {
+  margin-bottom: var(--space-1);
+  color: var(--signal-deep);
+}
+
+.direction-sheet {
+  border-block: 2px solid var(--ink);
+  padding-block: var(--space-6);
+}
+
+.direction-lane {
+  padding-block: var(--space-6);
+}
+
+.direction-lane + .direction-lane {
+  border-top: 1px solid var(--ink-soft);
+}
+
+.direction-lane > p:first-child {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.direction-lane > p:first-child b {
+  font-size: 1.25rem;
+  color: var(--signal-deep);
+}
+
+.direction-lane > p:first-child span {
+  font-size: 0.875rem;
+}
+
+.pe-line {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  padding: 0;
+  margin: var(--space-6) 0;
+  list-style: none;
+}
+
+.compact-page .pe-line li {
+  position: relative;
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  border-block: 1px solid var(--ink);
+  padding-block: var(--space-3);
+  background: var(--paper-raised);
+  font-size: 0.75rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.pe-line strong {
+  color: var(--signal-deep);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.pe-line li:not(:last-child)::after {
+  position: absolute;
+  top: 40%;
+  right: calc(-1 * var(--space-3));
+  width: var(--space-3);
+  content: "→";
+  color: var(--ink);
+  font-size: 0.875rem;
+}
+
+.direction-lane--west .pe-line li:not(:last-child)::after {
+  content: "←";
+}
+
+.compact-page .lane-note {
+  margin-bottom: 0;
+  font-size: 0.9375rem;
+}
+
+.compact-page .compact-takeaway {
+  max-width: 42ch;
+  padding-block: var(--space-4);
+  font-family: var(--font-display);
+  font-size: clamp(1.3rem, 3vw, 1.75rem);
+}
+
+.record-journey {
+  margin: var(--space-8) 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: journey;
+}
+
+.compact-page .record-journey > li {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  border-top: 1px solid var(--ink-soft);
+  padding-block: var(--space-6);
+  counter-increment: journey;
+}
+
+.journey-place {
+  color: var(--signal-deep);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.journey-place::before {
+  content: "0" counter(journey) " / ";
+}
+
+.compact-page .record-journey h3 {
+  margin-top: 0;
+  font-size: 1.25rem;
+}
+
+.record-journey p {
+  margin-bottom: 0;
+}
+
+.packet-note {
+  border-block: 1px solid var(--ink);
+  padding-block: var(--space-6);
+}
+
+.compact-page .packet-note h3 {
+  margin-top: 0;
+}
+
+.compact-page .compact-limits {
+  margin-top: var(--space-8);
+  border-top: 1px solid var(--ink-soft);
+  padding-top: var(--space-6);
+}
+
+.source-reading {
+  padding-left: var(--space-6);
+}
+
+.source-reading span {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--ink-soft);
+}
+
+.compact-page a,
+.compact-page summary {
+  min-height: 2.75rem;
+}
+
+.compact-next,
+.compact-page .page-footer a {
+  display: inline-flex;
+  align-items: center;
+  padding-block: var(--space-2);
+  font-weight: 700;
+}
+
+.compact-page .page-footer {
+  align-items: center;
+  margin-top: var(--space-8);
+}
+
+@media (min-width: 42rem) {
+  .record-line {
+    grid-template-columns: 7rem minmax(0, 1fr);
+  }
+
+  .record-line > b small {
+    display: block;
+    margin-left: 0;
+  }
+
+  .pe-line {
+    gap: var(--space-8);
+  }
+
+  .compact-page .pe-line li {
+    font-size: 1rem;
+  }
+
+  .pe-line strong {
+    font-size: 1.25rem;
+  }
+
+  .pe-line li:not(:last-child)::after {
+    right: calc(-1 * var(--space-8));
+    width: var(--space-8);
+    font-size: 1.25rem;
+  }
+
+  .compact-page .record-journey > li {
+    grid-template-columns: 10rem minmax(0, 1fr);
+    gap: var(--space-6);
+  }
+}
+
+@media (hover: hover) {
+  .compact-page a:hover,
+  .compact-page summary:hover {
+    color: var(--ink);
+  }
+}
+
+@media print {
+  .compact-page .record-strip li,
+  .compact-page .pe-line li,
+  .record-journey > li {
+    break-inside: avoid;
+  }
+}

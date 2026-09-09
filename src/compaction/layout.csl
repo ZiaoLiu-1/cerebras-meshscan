@@ -1,0 +1,69 @@
+// MeshScan extension: stable compaction with an eastbound count prefix and
+// westbound, variable-length redistribution of selected records.
+param width: i16;
+param chunk_size: i16;
+
+const count_even: color = @get_color(0);
+const count_odd: color = @get_color(1);
+const records_even: color = @get_color(2);
+const records_odd: color = @get_color(3);
+const memcpy = @import_module("<memcpy/get_params>", .{
+  .width = width,
+  .height = 1,
+});
+
+layout {
+  @comptime_assert(width >= 1 and width <= 8);
+  @comptime_assert(chunk_size >= 1 and chunk_size <= 64);
+  @set_rectangle(width, 1);
+
+  for (@range(i16, width)) |x| {
+    const count_tx = if (x % 2 == 0) count_even else count_odd;
+    const count_rx = if (x % 2 == 0) count_odd else count_even;
+    const records_tx = if (x % 2 == 0) records_even else records_odd;
+    const records_rx = if (x % 2 == 0) records_odd else records_even;
+    @set_tile_code(x, 0, "pe.csl", .{
+      .memcpy_params = memcpy.get_params(x),
+      .width = width,
+      .chunk_size = chunk_size,
+      .pe_id = x,
+      .count_tx_color = count_tx,
+      .count_rx_color = count_rx,
+      .records_tx_color = records_tx,
+      .records_rx_color = records_rx,
+    });
+
+    if (x > 0) {
+      @set_color_config(x, 0, count_rx, .{
+        .routes = .{ .rx = .{WEST}, .tx = .{RAMP} },
+      });
+      @set_color_config(x, 0, records_tx, .{
+        .routes = .{ .rx = .{RAMP}, .tx = .{WEST} },
+      });
+    }
+    if (x < width - 1) {
+      @set_color_config(x, 0, count_tx, .{
+        .routes = .{ .rx = .{RAMP}, .tx = .{EAST} },
+      });
+      @set_color_config(x, 0, records_rx, .{
+        .routes = .{ .rx = .{EAST}, .tx = .{RAMP} },
+      });
+    }
+  }
+
+  @export_name("values", [*]i32, true);
+  @export_name("valid_count", [*]i32, true);
+  @export_name("input_start", [*]i32, true);
+  @export_name("threshold", [*]i32, true);
+  @export_name("output_values", [*]i32, true);
+  @export_name("output_indices", [*]i32, true);
+  @export_name("local_count", [*]i32, true);
+  @export_name("offset", [*]i32, true);
+  @export_name("prefix_count", [*]i32, true);
+  @export_name("output_count", [*]i32, true);
+  @export_name("forwarded_count", [*]i32, true);
+  @export_name("received_count", [*]i32, true);
+  @export_name("completed", [*]i32, true);
+  @export_name("protocol_error", [*]i32, true);
+  @export_name("compute", fn()void);
+}

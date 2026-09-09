@@ -1,0 +1,333 @@
+// Stable threshold compaction on one PE row. Agent-assisted original source.
+// Values >= threshold survive, in original order. The output is physically
+// packed into C slots per PE; the host does not compact or reorder readback.
+param memcpy_params;
+param width: i16;
+param chunk_size: i16;
+param pe_id: i16;
+param count_tx_color: color;
+param count_rx_color: color;
+param records_tx_color: color;
+param records_rx_color: color;
+
+const sys_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+const count_iq = @get_input_queue(2);
+const count_oq = @get_output_queue(2);
+const records_iq = @get_input_queue(3);
+const records_oq = @get_output_queue(3);
+const finish_id = @get_local_task_id(9);
+const apply_prefix_id = @get_local_task_id(10);
+const await_records_id = @get_local_task_id(11);
+const receive_payload_id = @get_local_task_id(12);
+const process_payload_id = @get_local_task_id(13);
+const send_payload_id = @get_local_task_id(14);
+const capacity: i16 = width * chunk_size;
+const payload_capacity: i16 = 3 * capacity;
+
+var values: [chunk_size]i32;
+var valid_count = @zeros([1]i32);
+var input_start = @zeros([1]i32);
+var threshold = @zeros([1]i32);
+var output_values: [chunk_size]i32;
+var output_indices: [chunk_size]i32;
+var local_count = @zeros([1]i32);
+var offset = @zeros([1]i32);
+var prefix_count = @zeros([1]i32);
+var output_count = @zeros([1]i32);
+var forwarded_count = @zeros([1]i32);
+var received_count = @zeros([1]i32);
+var completed = @zeros([1]i32);
+var protocol_error = @zeros([1]i32);
+
+// Payloads are rank/value/original-index triples. Separate receive/send
+// buffers prevent asynchronous transfer from observing overwritten data.
+var selected_values: [chunk_size]i32;
+var selected_indices: [chunk_size]i32;
+var slot_written = @zeros([chunk_size]i16);
+var receive_payload: [payload_capacity]i32;
+var send_payload: [payload_capacity]i32;
+var receive_header = @zeros([1]i32);
+
+var values_ptr: [*]i32 = &values;
+var valid_count_ptr: [*]i32 = &valid_count;
+var input_start_ptr: [*]i32 = &input_start;
+var threshold_ptr: [*]i32 = &threshold;
+var output_values_ptr: [*]i32 = &output_values;
+var output_indices_ptr: [*]i32 = &output_indices;
+var local_count_ptr: [*]i32 = &local_count;
+var offset_ptr: [*]i32 = &offset;
+var prefix_count_ptr: [*]i32 = &prefix_count;
+var output_count_ptr: [*]i32 = &output_count;
+var forwarded_count_ptr: [*]i32 = &forwarded_count;
+var received_count_ptr: [*]i32 = &received_count;
+var completed_ptr: [*]i32 = &completed;
+var protocol_error_ptr: [*]i32 = &protocol_error;
+
+const offset_mem = @get_dsd(mem1d_dsd, .{
+  .base_address = &offset, .extent = 1,
+});
+const prefix_mem = @get_dsd(mem1d_dsd, .{
+  .base_address = &prefix_count, .extent = 1,
+});
+const header_in_mem = @get_dsd(mem1d_dsd, .{
+  .base_address = &receive_header, .extent = 1,
+});
+const header_out_mem = @get_dsd(mem1d_dsd, .{
+  .base_address = &forwarded_count, .extent = 1,
+});
+const payload_in_mem = @get_dsd(mem1d_dsd, .{
+  .base_address = &receive_payload, .extent = 1,
+});
+const payload_out_mem = @get_dsd(mem1d_dsd, .{
+  .base_address = &send_payload, .extent = 1,
+});
+
+fn mark_error(code: i32) void {
+  if (protocol_error[0] == 0) {
+    protocol_error[0] = code;
+  }
+}
+
+fn route_record(rank: i32, value: i32, original_index: i32) void {
+  if (rank < 0 or rank >= @as(i32, capacity)) {
+    mark_error(5);
+    return;
+  }
+  if (original_index < rank or original_index >= @as(i32, capacity)) {
+    mark_error(6);
+    return;
+  }
+  const owner = rank / @as(i32, chunk_size);
+  if (owner > @as(i32, pe_id)) {
+    mark_error(7);
+    return;
+  }
+  if (owner == @as(i32, pe_id)) {
+    const slot = @as(i16, rank % @as(i32, chunk_size));
+    if (slot_written[slot] != 0) {
+      mark_error(8);
+      return;
+    }
+    output_values[slot] = value;
+    output_indices[slot] = original_index;
+    slot_written[slot] = 1;
+    output_count[0] += 1;
+  } else {
+    if (forwarded_count[0] >= @as(i32, capacity)) {
+      mark_error(9);
+      return;
+    }
+    const word = @as(i16, 3 * forwarded_count[0]);
+    send_payload[word] = rank;
+    send_payload[word + 1] = value;
+    send_payload[word + 2] = original_index;
+    forwarded_count[0] += 1;
+  }
+}
+
+fn send_header_or_finish() void {
+  if (pe_id > 0) {
+    const west = @get_dsd(fabout_dsd, if (@is_arch("wse3")) .{
+      .extent = 1, .output_queue = records_oq,
+    } else .{
+      .fabric_color = records_tx_color,
+      .extent = 1, .output_queue = records_oq,
+    });
+    // Even zero records has a header: no-work PEs cannot disappear from the
+    // dependency chain. Payload follows only after this send has completed.
+    @mov32(west, header_out_mem, .{
+      .async = true, .activate = send_payload_id,
+    });
+  } else {
+    @activate(finish_id);
+  }
+}
+
+fn apply_prefix() void {
+  if (offset[0] < 0 or offset[0] > @as(i32, capacity) - local_count[0]) {
+    mark_error(3);
+    offset[0] = 0;
+  }
+  prefix_count[0] = offset[0] + local_count[0];
+
+  // rank <= original_index < (pe_id + 1)*C for every local record, since
+  // balanced input blocks contain at most C values. Therefore its output
+  // owner cannot be east of its source. A west-only redistribution suffices.
+  for (@range(i16, @as(i16, local_count[0]))) |j| {
+    route_record(offset[0] + @as(i32, j), selected_values[j], selected_indices[j]);
+  }
+
+  if (pe_id < width - 1) {
+    const east = @get_dsd(fabout_dsd, if (@is_arch("wse3")) .{
+      .extent = 1, .output_queue = count_oq,
+    } else .{
+      .fabric_color = count_tx_color,
+      .extent = 1, .output_queue = count_oq,
+    });
+    @mov32(east, prefix_mem, .{
+      .async = true, .activate = await_records_id,
+    });
+  } else {
+    // Tail has no east neighbor. Its zero-length receive is logical only;
+    // do not issue a zero-extent fabric DSD.
+    @activate(process_payload_id);
+  }
+}
+
+fn compute() void {
+  local_count[0] = 0;
+  offset[0] = 0;
+  prefix_count[0] = 0;
+  output_count[0] = 0;
+  forwarded_count[0] = 0;
+  received_count[0] = 0;
+  completed[0] = 0;
+  protocol_error[0] = 0;
+  receive_header[0] = 0;
+  for (@range(i16, chunk_size)) |i| {
+    slot_written[i] = 0;
+  }
+
+  // Host preconditions are also guarded before any local indexing. On bad
+  // host metadata participate with zero local records, and expose an error.
+  var count: i16 = 0;
+  if (valid_count[0] < 0 or valid_count[0] > @as(i32, chunk_size)) {
+    mark_error(1);
+  } else if (input_start[0] < 0 or
+             input_start[0] > @as(i32, capacity) - valid_count[0]) {
+    mark_error(2);
+  } else {
+    count = @as(i16, valid_count[0]);
+  }
+  for (@range(i16, count)) |i| {
+    if (values[i] >= threshold[0]) {
+      const j = @as(i16, local_count[0]);
+      selected_values[j] = values[i];
+      selected_indices[j] = input_start[0] + @as(i32, i);
+      local_count[0] += 1;
+    }
+  }
+  // Inputs and unused output slots are never written by this program.
+  if (pe_id == 0) {
+    apply_prefix();
+  } else {
+    const west = @get_dsd(fabin_dsd, .{
+      .extent = 1, .input_queue = count_iq,
+    });
+    @mov32(offset_mem, west, .{
+      .async = true, .activate = apply_prefix_id,
+    });
+  }
+}
+
+task apply_prefix_task() void {
+  apply_prefix();
+}
+
+task await_records_task() void {
+  const east = @get_dsd(fabin_dsd, .{
+    .extent = 1, .input_queue = records_iq,
+  });
+  @mov32(header_in_mem, east, .{
+    .async = true, .activate = receive_payload_id,
+  });
+}
+
+task receive_payload_task() void {
+  if (receive_header[0] < 0 or receive_header[0] > @as(i32, capacity)) {
+    // A corrupt peer header is outside the valid host contract. Fail closed
+    // without indexing an oversized buffer; the host's bounded timeout also
+    // catches a peer that is still attempting to send a malformed payload.
+    mark_error(4);
+    received_count[0] = 0;
+    @activate(process_payload_id);
+    return;
+  }
+  received_count[0] = receive_header[0];
+  if (received_count[0] == 0) {
+    @activate(process_payload_id);
+    return;
+  }
+  const words = @as(u16, 3 * received_count[0]);
+  const east = @get_dsd(fabin_dsd, .{
+    .extent = 1, .input_queue = records_iq,
+  });
+  const source = @set_dsd_length(east, words);
+  const destination = @set_dsd_length(payload_in_mem, words);
+  @mov32(destination, source, .{
+    .async = true, .activate = process_payload_id,
+  });
+}
+
+task process_payload_task() void {
+  // Local records precede all east-originating records. Appending in this
+  // order preserves the strictly increasing rank sequence on every link.
+  for (@range(i16, @as(i16, received_count[0]))) |j| {
+    const word = 3 * j;
+    route_record(receive_payload[word], receive_payload[word + 1],
+                 receive_payload[word + 2]);
+  }
+  send_header_or_finish();
+}
+
+task send_payload_task() void {
+  if (forwarded_count[0] == 0) {
+    @activate(finish_id);
+    return;
+  }
+  const words = @as(u16, 3 * forwarded_count[0]);
+  const west = @get_dsd(fabout_dsd, if (@is_arch("wse3")) .{
+    .extent = 1, .output_queue = records_oq,
+  } else .{
+    .fabric_color = records_tx_color,
+    .extent = 1, .output_queue = records_oq,
+  });
+  const destination = @set_dsd_length(west, words);
+  const source = @set_dsd_length(payload_out_mem, words);
+  @mov32(destination, source, .{
+    .async = true, .activate = finish_id,
+  });
+}
+
+task finish_task() void {
+  // Local send completion is not a hardware-global barrier. A blocking
+  // full-rectangle host launch must finish before any D2H readback begins.
+  completed[0] = 1;
+  sys_mod.unblock_cmd_stream();
+}
+
+comptime {
+  @bind_local_task(finish_task, finish_id);
+  @bind_local_task(apply_prefix_task, apply_prefix_id);
+  @bind_local_task(await_records_task, await_records_id);
+  @bind_local_task(receive_payload_task, receive_payload_id);
+  @bind_local_task(process_payload_task, process_payload_id);
+  @bind_local_task(send_payload_task, send_payload_id);
+  if (pe_id > 0) {
+    @initialize_queue(count_iq, .{ .color = count_rx_color });
+    @initialize_queue(records_oq, if (@is_arch("wse3")) .{
+      .color = records_tx_color,
+    } else .{});
+  }
+  if (pe_id < width - 1) {
+    @initialize_queue(count_oq, if (@is_arch("wse3")) .{
+      .color = count_tx_color,
+    } else .{});
+    @initialize_queue(records_iq, .{ .color = records_rx_color });
+  }
+  @export_symbol(values_ptr, "values");
+  @export_symbol(valid_count_ptr, "valid_count");
+  @export_symbol(input_start_ptr, "input_start");
+  @export_symbol(threshold_ptr, "threshold");
+  @export_symbol(output_values_ptr, "output_values");
+  @export_symbol(output_indices_ptr, "output_indices");
+  @export_symbol(local_count_ptr, "local_count");
+  @export_symbol(offset_ptr, "offset");
+  @export_symbol(prefix_count_ptr, "prefix_count");
+  @export_symbol(output_count_ptr, "output_count");
+  @export_symbol(forwarded_count_ptr, "forwarded_count");
+  @export_symbol(received_count_ptr, "received_count");
+  @export_symbol(completed_ptr, "completed");
+  @export_symbol(protocol_error_ptr, "protocol_error");
+  @export_symbol(compute);
+}

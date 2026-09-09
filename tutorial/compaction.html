@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="MeshCompact 中文教学：用一个四 PE 例子理解稳定筛选、计数前缀与跨 PE 记录搬运。静态图解，无需 JavaScript。">
+    <title>先筛选，再搬运 — MeshCompact 实验笔记</title>
+    <link rel="stylesheet" href="./styles.css">
+    <link rel="stylesheet" href="./compaction.css">
+  </head>
+  <body class="compact-page">
+    <a class="skip-link" href="#main-content">跳到稳定筛选讲解</a>
+    <header class="guide-header">
+      <p class="eyebrow">FIELD NOTE 03 · MeshScan → MeshCompact</p>
+      <h1>先决定留下谁，<br>再决定搬去哪。</h1>
+      <p class="lede">从“每个位置都算一个答案”，走到“输出有多长、放在哪里，都由数据决定”。前缀和现在成了分配地址的工具。</p>
+      <p class="compact-scope">固定手算示例 · 不是 WSE simulator 输出 · 本页不调用 SDK</p>
+    </header>
+
+    <main id="main-content" class="guide-main">
+      <nav class="lesson-nav" aria-label="本章入口">
+        <a href="./index.html">← 前缀和入门</a>
+        <a href="#problem">看一个例子</a>
+        <a href="#two-directions">理解两个方向</a>
+        <a href="#record-journey">跟着一条记录走</a>
+        <a href="#try-it">在本地试一次</a>
+      </nav>
+
+      <section id="problem" class="guide-section" aria-labelledby="problem-title">
+        <p class="section-label">01 · Stable stream compaction</p>
+        <h2 id="problem-title">去掉不需要的记录，<br>不打乱留下来的顺序。</h2>
+        <p>假设只关心不低于 5 的读数。我们把其余读数去掉，让留下的记录连续排好；但不会排序，也不会把两个相同的值合并。这叫<strong>稳定筛选（stable stream compaction）</strong>。</p>
+        <p>它可以是传感器阈值筛选、稀疏数据预处理或活跃任务列表中的一个基础部件。这里实现的是这个部件，还没有连接真实传感器或生产系统。</p>
+
+        <figure class="compact-example" id="worked-example" data-width="4" data-chunk-size="3" data-threshold="5" data-input="2,-1,5,5,-4,9,0,7" data-output="5,5,9,7" data-indices="2,3,5,7">
+          <figcaption><b>本章手算例</b><span>4 个 PE · 每 PE 3 个物理输出槽 · 条件 value ≥ 5</span></figcaption>
+          <div class="record-line">
+            <b>输入 <small>值 / 原始下标</small></b>
+            <ol class="record-strip" aria-label="八条输入记录">
+              <li data-index="0" data-value="2" data-kept="false"><b>2</b><span>@0 · 去掉</span></li>
+              <li data-index="1" data-value="-1" data-kept="false"><b>−1</b><span>@1 · 去掉</span></li>
+              <li data-index="2" data-value="5" data-kept="true"><b>5</b><span>@2 · 保留</span></li>
+              <li data-index="3" data-value="5" data-kept="true"><b>5</b><span>@3 · 保留</span></li>
+              <li data-index="4" data-value="-4" data-kept="false"><b>−4</b><span>@4 · 去掉</span></li>
+              <li data-index="5" data-value="9" data-kept="true"><b>9</b><span>@5 · 保留</span></li>
+              <li data-index="6" data-value="0" data-kept="false"><b>0</b><span>@6 · 去掉</span></li>
+              <li data-index="7" data-value="7" data-kept="true"><b>7</b><span>@7 · 保留</span></li>
+            </ol>
+          </div>
+          <div class="record-line record-line--result">
+            <b>输出 <small>顺序不变</small></b>
+            <ol class="record-strip" aria-label="四条稳定筛选结果">
+              <li data-rank="0" data-source-index="2" data-output-value="5"><b>5</b><span>@2 → 位置 0</span></li>
+              <li data-rank="1" data-source-index="3" data-output-value="5"><b>5</b><span>@3 → 位置 1</span></li>
+              <li data-rank="2" data-source-index="5" data-output-value="9"><b>9</b><span>@5 → 位置 2</span></li>
+              <li data-rank="3" data-source-index="7" data-output-value="7"><b>7</b><span>@7 → 位置 3</span></li>
+            </ol>
+          </div>
+          <p>结果值是 <code>[5,5,9,7]</code>，原始下标是 <code>[2,3,5,7]</code>。<code>5@2</code> 与 <code>5@3</code> 不是同一条记录；保留下标才能发现重复、遗漏或顺序错误。</p>
+        </figure>
+      </section>
+
+      <section id="two-directions" class="guide-section" aria-labelledby="directions-title">
+        <p class="section-label">02 · Count east, move west</p>
+        <h2 id="directions-title">先向右数清楚，<br>再向左搬整齐。</h2>
+        <p>八条输入平均分给四个 PE，每个 PE 两条。每个 PE 的物理容量仍为三槽：<strong>有效输入数量不等于物理容量</strong>，多出来的槽不能参与筛选。</p>
+        <ol class="phase-list">
+          <li><b>各自筛选</b><span>每个 PE 只检查自己的有效输入。本地选中数依次是 <code>[0,2,1,1]</code>。</span></li>
+          <li><b>计数向东 →</b><span>把累计选中数传给右边。收到的数叫 <code>offset</code>：在本 PE 之前，已经有多少条结果。</span></li>
+          <li><b>记录向西 ←</b><span>算好每条记录的全局输出位置，再传送实际的值和原始下标。每个 PE 留下属于自己的记录，其余继续左传。</span></li>
+        </ol>
+
+        <figure class="direction-sheet" aria-labelledby="direction-caption">
+          <figcaption id="direction-caption">同一行 PE，两个不同任务</figcaption>
+          <div class="direction-lane direction-lane--east">
+            <p><b>向东 →</b><span>传累计计数，不传结果值</span></p>
+            <ol class="pe-line" aria-label="向东的累计选中数">
+              <li data-count-pe="0" data-local-count="0" data-offset="0" data-prefix-count="0"><b>PE 0</b><span>本地 0</span><strong>累计 0</strong></li>
+              <li data-count-pe="1" data-local-count="2" data-offset="0" data-prefix-count="2"><b>PE 1</b><span>本地 2</span><strong>累计 2</strong></li>
+              <li data-count-pe="2" data-local-count="1" data-offset="2" data-prefix-count="3"><b>PE 2</b><span>本地 1</span><strong>累计 3</strong></li>
+              <li data-count-pe="3" data-local-count="1" data-offset="3" data-prefix-count="4"><b>PE 3</b><span>本地 1</span><strong>累计 4</strong></li>
+            </ol>
+            <p class="lane-note">因此四个 PE 的 <code>offset = [0,0,2,3]</code>。本地第 j 条选中记录的输出位置为 <code>rank = offset + j</code>，j 从 0 开始。</p>
+          </div>
+          <div class="direction-lane direction-lane--west">
+            <p><b>向西 ←</b><span>传包头 + 记录，途中留下本地输出</span></p>
+            <ol class="pe-line" aria-label="最终每个 PE 持有的连续输出">
+              <li data-output-pe="0" data-output-values="5,5,9" data-output-indices="2,3,5" data-received="3" data-forwarded="0"><b>PE 0</b><strong>5,5,9</strong><span>位置 0–2</span></li>
+              <li data-output-pe="1" data-output-values="7" data-output-indices="7" data-received="2" data-forwarded="3"><b>PE 1</b><strong>7</strong><span>位置 3</span></li>
+              <li data-output-pe="2" data-output-values="" data-output-indices="" data-received="1" data-forwarded="2"><b>PE 2</b><strong>空</strong><span>仍须完成</span></li>
+              <li data-output-pe="3" data-output-values="" data-output-indices="" data-received="0" data-forwarded="1"><b>PE 3</b><strong>空</strong><span>发起返回</span></li>
+            </ol>
+            <p class="lane-note">每个 PE 有 3 槽，所以 <code>owner = floor(rank / 3)</code>。这些记录已在 device 侧搬到各自的输出 PE；不是最后由 Python 筛选、重排出来。</p>
+          </div>
+        </figure>
+        <p class="compact-takeaway">前缀和在这里回答的不是“总共加到多少”，而是：<strong>“我的第一条结果应该从哪个位置开始写？”</strong></p>
+      </section>
+
+      <section id="record-journey" class="guide-section" aria-labelledby="journey-title">
+        <p class="section-label">03 · 跟着 7@7 走一遍</p>
+        <h2 id="journey-title">它在 PE 3 出发，<br>为什么要住到 PE 1？</h2>
+        <ol class="record-journey">
+          <li><span class="journey-place">PE 3 · 选中</span><div><h3>7 ≥ 5，所以保留。</h3><p>它的原始下标是 7，是 PE 3 本地第 0 条选中记录。前面三个 PE 一共选中 3 条，所以本 PE 的 offset 是 3。</p></div></li>
+          <li><span class="journey-place">PE 3 · 定位</span><div><h3>新位置是 3，不是原来的 7。</h3><p><code>rank = 3 + 0 = 3</code>；每个 PE 三槽，<code>floor(3 / 3) = 1</code>。因此目的地是 PE 1 的第 0 槽。</p></div></li>
+          <li><span class="journey-place">PE 2 · 转发</span><div><h3>经过，不留下。</h3><p>PE 3 发来一条记录 <code>(rank=3, value=7, index=7)</code>。PE 2 发现 owner 为 1，把它和自己选中的 <code>9@5</code> 一起向西转发。</p></div></li>
+          <li><span class="journey-place">PE 1 · 到达</span><div><h3>把 7 写入自己的输出第 0 槽。</h3><p>PE 1 留下 <code>7@7</code>；把 <code>5@2、5@3、9@5</code> 三条记录继续送给 PE 0。最终按物理 PE 和槽位回读，得到原顺序不变的结果。</p></div></li>
+        </ol>
+        <div class="packet-note">
+          <h3>包长不是写死的。</h3>
+          <p>本例三条链路依次传 <code>PE 3 → PE 2：1 条</code>、<code>PE 2 → PE 1：2 条</code>、<code>PE 1 → PE 0：3 条</code>，方向都是向西。每个包先发记录数，再发对应的三元组；0 条记录只发包头，也要走完完成路径。</p>
+          <p>本例从东边收到的记录数是 <code>[3,2,1,0]</code>，向西转发数是 <code>[0,3,2,1]</code>。这是逻辑计数，不是性能测量。</p>
+        </div>
+        <details class="question-details">
+          <summary>为什么不用把数据往右搬？</summary>
+          <p>筛选只删除记录，所以新位置 rank 不会大于原始下标。平衡连续输入分块中，第 p 个 PE 的下标小于 <code>(p+1) × C</code>，因此 <code>floor(rank / C) ≤ p</code>：记录只能原地留下或向左走。</p>
+          <p>这个性质依赖当前布局与稳定筛选。换成排序、扩张或哈希分区后，不能照搬这套单向返回协议。</p>
+        </details>
+      </section>
+
+      <section class="guide-section" aria-labelledby="engineering-title">
+        <p class="section-label">04 · 项目的工程分量在哪里</p>
+        <h2 id="engineering-title">不只是 filter，<br>还要证明每条记录都去了对的地方。</h2>
+        <dl class="file-index">
+          <div><dt>输出长度由数据决定</dt><dd>没有选中、全部选中、只有最后一个 PE 选中，都必须正确。输入值不相加，所以完整 int32 范围都可筛选，不受扫描基线的求和溢出限制。</dd></div>
+          <div><dt>一趟设备调用，多个异步阶段</dt><dd>Python 执行 H2D → 一次阻塞 <code>compute</code> → D2H；count 与 scatter 之间没有 host 往返。设备任务在收发完成后衔接下一步。</dd></div>
+          <div><dt>值、顺序、路由一起验算</dt><dd>C++ 独立串行筛选定义答案；分布式模型检查物理归属。host 检查值和原始下标、每 PE 计数、poison padding、完成与错误标记；不能只看最终条数。</dd></div>
+          <div><dt>每个 PE 都守恒</dt><dd><code>local_count + received_count = output_count + forwarded_count</code>。以 PE 1 为例：<code>2 + 2 = 1 + 3</code>。没有凭空新增或消失的记录。</dd></div>
+        </dl>
+        <p>还要反复 launch，检查旧状态没有残留；超时、异常或 mismatch 都应产生失败，而不是成功报告。单个发送完成不是全局 barrier，必须等完整矩形的 blocking launch 返回，再回读并检查每个 PE。</p>
+        <p class="compact-limits"><b>现在的边界：</b>这是有限批次（bounded batch），不是无限实时流服务；链式通信仍有顺序依赖，最坏转发量为 O(P×N)。这里只验证正确性，不声称真实硬件速度、加速比或生产部署。测试覆盖范围见 <code>docs/COMPACTION_VALIDATION.md</code>。</p>
+      </section>
+
+      <section id="try-it" class="guide-section" aria-labelledby="try-title">
+        <p class="section-label">05 · 动手运行</p>
+        <h2 id="try-title">先核对这一例，<br>再改一条你自己的规则。</h2>
+        <p>以下命令在项目根目录中执行。先跑 C++ 对照模型，不需要启动 SDK：</p>
+        <pre><code>make compaction
+./build/meshcompact-reference --pes 4 --chunk-size 3 --threshold 5 --values 2,-1,5,5,-4,9,0,7
+make test-compaction</code></pre>
+        <p>找 JSON 的 <code>output</code>、<code>indices</code> 和 <code>pes</code>，逐一核对本页。接口允许 1–8 PE、每 PE 1–64 槽；允许的组合不等于每种组合都经过 SDK 测试。</p>
+        <details class="question-details">
+          <summary>运行真正的 SDK simulator</summary>
+          <p>以下命令要求 Mac 上已配置 SDK 2.10.1 和名为 <code>cs_sdk</code> 的 Lima VM，并至少预留 4 GiB 磁盘空间。其他 VM 名或 SDK 路径可通过 <code>python3 tools/run_compaction.py --help</code> 查看配置选项：</p>
+          <pre><code>limactl start cs_sdk
+make simulator-compaction
+limactl stop cs_sdk</code></pre>
+          <p>保留私有 run 目录；以实际退出状态和验证报告为准。SDK、生成物、原始运行记录不放进公开网页。<code>--prepare-only</code> 只准备输入，不代表 simulator 通过。</p>
+        </details>
+        <h3>沿着一条记录读源代码</h3>
+        <ol class="source-reading">
+          <li><code>src/compaction.cpp</code><span>先看正确结果与物理归属。</span></li>
+          <li><code>src/compaction/layout.csl</code><span>再看计数向东、记录向西的连接。</span></li>
+          <li><code>src/compaction/pe.csl</code><span>找 count、包头、payload、完成任务。</span></li>
+          <li><code>host/compaction_contract.py</code><span>核对 host 怎样发现错误。</span></li>
+        </ol>
+        <p>完整数据契约和运行说明在 <code>docs/COMPACTION.md</code>；上面的源码路径均相对于项目根目录。</p>
+        <h3>你自己的第一份改动</h3>
+        <p>先手算 <code>[1,9,2,8,3,7]</code>、阈值 7、三个 PE、每 PE 三槽；然后加一个“只有最后一个 PE 选中”的测试。能解释后，把谓词改成闭区间筛选，同时改 C++、CSL 和测试。</p>
+        <p>保留原版本用于对照，一次只改变一个条件。记录预测输出、实际输出和对应代码，再解释改变筛选条件后，计数与路由为什么仍然成立。</p>
+        <a class="compact-next" href="./read-code.html#rewrite">读基础版的复写方法 →</a>
+      </section>
+    </main>
+    <footer class="page-footer">
+      <p>MeshCompact / authored teaching example / local only</p>
+      <a href="./index.html">返回实验纸首页</a>
+      <p>本机 localhost 不能从手机远程访问；离线阅读可使用 docs/COMPACTION.md。</p>
+    </footer>
+  </body>
+</html>
